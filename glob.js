@@ -52,31 +52,47 @@ var globSync = require('./sync.js')
 var common = require('./common.js')
 var setopts = common.setopts
 var ownProp = common.ownProp
-// *** CHANGE 1: REMOVE INFLIGHT REQUIRE ***
+// *** CHANGE 1: REMOVE INFLIGHT, ADD LRU-CACHE ***
 // var inflight = require('inflight')
+var LRU = require('lru-cache')
 var util = require('util')
 var childrenIgnored = common.childrenIgnored
 var isIgnored = common.isIgnored
 
 var once = require('once')
 
-// *** CHANGE 2: CREATE A SIMPLE CACHING FUNCTION ***
-// This function mimics the behavior of 'inflight' by ensuring a callback
-// is only ever called once for a given key.
-var inflightCache = Object.create(null)
+// *** CHANGE 2: CREATE A LRU CACHE FOR IN-FLIGHT OPERATIONS ***
+// This cache stores a list of callbacks for each operation key.
+// When an operation for a key is requested again, the new callback is
+// added to the list instead of starting a new I/O operation.
+// We set a max size to prevent memory from growing indefinitely.
+var inflightCache = new LRU({ max: 1000 })
+
 function customInflight(key, cb) {
-  // If we've already seen this key, return without executing the callback.
-  if (inflightCache[key]) {
+  var callbacks = inflightCache.get(key)
+  if (callbacks) {
+    // If an operation is already in flight, add the new callback to the list.
+    callbacks.push(cb)
     return null
-  }
-  
-  // Mark the key as in-flight and return a new callback that clears the key
-  // and calls the original callback.
-  inflightCache[key] = true
-  
-  return function () {
-    delete inflightCache[key]
-    cb.apply(null, arguments)
+  } else {
+    // This is the first time this key is seen. Create a new list for callbacks
+    // and store it in the cache.
+    callbacks = [cb]
+    inflightCache.set(key, callbacks)
+
+    // Return a function that will execute all the stored callbacks and then
+    // remove the entry from the cache.
+    return function () {
+      // Get the callbacks and remove the entry from the cache immediately
+      var args = arguments
+      var cbs = inflightCache.get(key)
+      inflightCache.delete(key)
+
+      // Execute all the callbacks that were waiting for this operation
+      cbs.forEach(function (callback) {
+        callback.apply(null, args)
+      })
+    }
   }
 }
 
