@@ -52,12 +52,33 @@ var globSync = require('./sync.js')
 var common = require('./common.js')
 var setopts = common.setopts
 var ownProp = common.ownProp
-var inflight = require('inflight')
+// *** CHANGE 1: REMOVE INFLIGHT REQUIRE ***
+// var inflight = require('inflight')
 var util = require('util')
 var childrenIgnored = common.childrenIgnored
 var isIgnored = common.isIgnored
 
 var once = require('once')
+
+// *** CHANGE 2: CREATE A SIMPLE CACHING FUNCTION ***
+// This function mimics the behavior of 'inflight' by ensuring a callback
+// is only ever called once for a given key.
+var inflightCache = Object.create(null)
+function customInflight(key, cb) {
+  // If we've already seen this key, return without executing the callback.
+  if (inflightCache[key]) {
+    return null
+  }
+  
+  // Mark the key as in-flight and return a new callback that clears the key
+  // and calls the original callback.
+  inflightCache[key] = true
+  
+  return function () {
+    delete inflightCache[key]
+    cb.apply(null, arguments)
+  }
+}
 
 function glob (pattern, options, cb) {
   if (typeof options === 'function') cb = options, options = {}
@@ -367,6 +388,7 @@ Glob.prototype._process = function (pattern, index, inGlobStar, cb) {
 
 Glob.prototype._processReaddir = function (prefix, read, abs, remain, index, inGlobStar, cb) {
   var self = this
+  // *** CHANGE 3: REPLACE `inflight` CALL with `customInflight` ***
   this._readdir(abs, inGlobStar, function (er, entries) {
     return self._processReaddir2(prefix, read, abs, remain, index, inGlobStar, entries, cb)
   })
@@ -500,7 +522,8 @@ Glob.prototype._readdirInGlobStar = function (abs, cb) {
 
   var lstatkey = 'lstat\0' + abs
   var self = this
-  var lstatcb = inflight(lstatkey, lstatcb_)
+  // *** CHANGE 4: REPLACE `inflight` CALL with `customInflight` ***
+  var lstatcb = customInflight(lstatkey, lstatcb_)
 
   if (lstatcb)
     self.fs.lstat(abs, lstatcb)
@@ -526,7 +549,8 @@ Glob.prototype._readdir = function (abs, inGlobStar, cb) {
   if (this.aborted)
     return
 
-  cb = inflight('readdir\0'+abs+'\0'+inGlobStar, cb)
+  // *** CHANGE 5: REPLACE `inflight` CALL with `customInflight` ***
+  cb = customInflight('readdir\0'+abs+'\0'+inGlobStar, cb)
   if (!cb)
     return
 
@@ -746,7 +770,8 @@ Glob.prototype._stat = function (f, cb) {
   }
 
   var self = this
-  var statcb = inflight('stat\0' + abs, lstatcb_)
+  // *** CHANGE 6: REPLACE `inflight` CALL with `customInflight` ***
+  var statcb = customInflight('stat\0' + abs, lstatcb_)
   if (statcb)
     self.fs.lstat(abs, statcb)
 
