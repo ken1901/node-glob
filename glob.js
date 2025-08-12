@@ -66,32 +66,35 @@ var once = require('once')
 // When an operation for a key is requested again, the new callback is
 // added to the list instead of starting a new I/O operation.
 // We set a max size to prevent memory from growing indefinitely.
-var inflightCache = new LRU({ max: 1000 })
+// *** NEW CHANGE: INITIALIZE LRU CACHE ***
+var inflightCache = new LRU({
+  max: 100, // A reasonable cache size, adjust as needed
+  ttl: 1000 * 60 * 5, // 5 minute time-to-live
+  allowStale: false
+})
 
 function customInflight(key, cb) {
   var callbacks = inflightCache.get(key)
   if (callbacks) {
-    // If an operation is already in flight, add the new callback to the list.
+    // If an operation is already in-flight, add this callback to the list.
     callbacks.push(cb)
     return null
-  } else {
-    // This is the first time this key is seen. Create a new list for callbacks
-    // and store it in the cache.
-    callbacks = [cb]
-    inflightCache.set(key, callbacks)
+  }
+  
+  // If no operation is in-flight for this key, start one.
+  // We'll store an array with the single callback.
+  callbacks = [cb]
+  inflightCache.set(key, callbacks)
 
-    // Return a function that will execute all the stored callbacks and then
-    // remove the entry from the cache.
-    return function () {
-      // Get the callbacks and remove the entry from the cache immediately
-      var args = arguments
-      var cbs = inflightCache.get(key)
+  return function () {
+    // This is the "cleanup" function that will be called after the async operation.
+    // It retrieves all callbacks associated with the key and calls them.
+    var inflightCallbacks = inflightCache.get(key)
+    if (inflightCallbacks) {
       inflightCache.delete(key)
-
-      // Execute all the callbacks that were waiting for this operation
-      cbs.forEach(function (callback) {
-        callback.apply(null, args)
-      })
+      for (var i = 0; i < inflightCallbacks.length; i++) {
+        inflightCallbacks[i].apply(null, arguments)
+      }
     }
   }
 }
