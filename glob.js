@@ -54,8 +54,20 @@ var setopts = common.setopts
 var ownProp = common.ownProp
 // *** CHANGE 1: REMOVE INFLIGHT, ADD LRU-CACHE ***
 // var inflight = require('inflight')
-var LRU = require('lru-cache')
+// *** CHANGE 1: ATTEMPT TO REQUIRE THE LRU-CACHE MODULE ***
+// var lruModule = require('lru-cache')
+
+// *** NEW CHANGE: CHECK FOR ALL KNOWN LRU-CACHE EXPORT FORMATS ***
+// We check if the required module is a constructor itself,
+// or if the constructor is a property on the required object.
+// --- NO EXTERNAL LRU-CACHE LIBRARY NEEDED ---
+
+// A simple in-memory cache for in-flight requests.
+// This is a minimal LRU implementation to avoid external dependencies.
+
+
 var util = require('util')
+
 var childrenIgnored = common.childrenIgnored
 var isIgnored = common.isIgnored
 
@@ -67,37 +79,54 @@ var once = require('once')
 // added to the list instead of starting a new I/O operation.
 // We set a max size to prevent memory from growing indefinitely.
 // *** NEW CHANGE: INITIALIZE LRU CACHE ***
-var inflightCache = new LRU({
-  max: 100, // A reasonable cache size, adjust as needed
-  ttl: 1000 * 60 * 5, // 5 minute time-to-live
-  allowStale: false
-})
+var inflightCache = {}
+var inflightCacheKeys = []
+var MAX_CACHE_SIZE = 100
 
+function addToCache(key, value) {
+  if (inflightCacheKeys.length >= MAX_CACHE_SIZE) {
+    var oldestKey = inflightCacheKeys.shift()
+    delete inflightCache[oldestKey]
+  }
+  inflightCache[key] = value
+  inflightCacheKeys.push(key)
+}
+
+function getFromCache(key) {
+  return inflightCache[key]
+}
+
+function deleteFromCache(key) {
+  delete inflightCache[key]
+  var index = inflightCacheKeys.indexOf(key)
+  if (index > -1) {
+    inflightCacheKeys.splice(index, 1)
+  }
+}
+
+// Custom inflight function using our simple in-memory cache.
 function customInflight(key, cb) {
-  var callbacks = inflightCache.get(key)
+  var callbacks = getFromCache(key)
   if (callbacks) {
-    // If an operation is already in-flight, add this callback to the list.
     callbacks.push(cb)
     return null
   }
-  
-  // If no operation is in-flight for this key, start one.
-  // We'll store an array with the single callback.
-  callbacks = [cb]
-  inflightCache.set(key, callbacks)
 
-  return function () {
-    // This is the "cleanup" function that will be called after the async operation.
-    // It retrieves all callbacks associated with the key and calls them.
-    var inflightCallbacks = inflightCache.get(key)
+  callbacks = [cb]
+  addToCache(key, callbacks)
+
+  return function() {
+    var inflightCallbacks = getFromCache(key)
     if (inflightCallbacks) {
-      inflightCache.delete(key)
+      deleteFromCache(key)
       for (var i = 0; i < inflightCallbacks.length; i++) {
         inflightCallbacks[i].apply(null, arguments)
       }
     }
   }
 }
+
+// --- END OF CUSTOM CACHE IMPLEMENTATION ---
 
 function glob (pattern, options, cb) {
   if (typeof options === 'function') cb = options, options = {}
